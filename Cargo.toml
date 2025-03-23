@@ -9,7 +9,7 @@ name = "ber_tlv_decoder"
 crate-type = ["cdylib"]
 
 [dependencies]
-pyo3 = "0.24.0"
+pyo3 = { version = "0.24.0", features = ["extension-module", "generate-import-lib"] }
 flate2 = "1.1.0"
 rayon = "1.10.0"
 walkdir = "2.5.0"

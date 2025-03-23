@@ -314,6 +314,7 @@ fn tlv_from_gz_files(py: Python, path: String) -> PyResult<PyObject> {
         .map(|e| e.path().to_path_buf())
         .collect();
 
+    
     let results: Mutex<HashMap<String, Vec<TlvObject>>> = Mutex::new(HashMap::new());  
 
     paths.par_iter().for_each(|path: &PathBuf| {
@@ -324,7 +325,7 @@ fn tlv_from_gz_files(py: Python, path: String) -> PyResult<PyObject> {
         } else {
             let mut results = results.lock().unwrap();
             // Insert each TLVObject into the results map, associating it with the path.
-            results.insert(path.display().to_string(), tlv_objects.clone());
+            results.insert(String::from(path.file_name().and_then(|f| f.to_str()).unwrap_or("")), tlv_objects.clone());
         }
     });
 
