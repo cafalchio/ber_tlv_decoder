@@ -1,4 +1,13 @@
 use pyo3::prelude::*;
+use pyo3::types::PyDict;
+use std::io::Read;
+use flate2::read::GzDecoder;
+use std::path::PathBuf;
+use walkdir::{DirEntry, WalkDir};
+use rayon::prelude::*;
+use std::collections::HashMap;
+use std::sync::Mutex;
+
 
 
 const CLASS_SHIFT: u8 = 6;
@@ -48,7 +57,7 @@ pub struct BerTag {
     pub number: u8,
 }
 
-#[derive(Clone)]
+#[derive(Clone)] 
 #[pyclass]
 pub struct TlvObject {
     #[pyo3(get)]
@@ -63,7 +72,25 @@ pub struct TlvObject {
     pub children: Vec<TlvObject>,
 }
 
-
+#[pymethods]
+impl TlvObject {
+    #[new]
+    fn new(
+        tag: BerTag, 
+        length: usize, 
+        value: Vec<u8>, 
+        offset: usize, 
+        children: Vec<TlvObject>
+    ) -> Self {
+        TlvObject {
+            tag,
+            length,
+            value,
+            offset,
+            children,
+        }
+    }
+}
 
 
 pub struct Data<'a> {
@@ -243,3 +270,76 @@ pub fn decode_tlv(
 }
 
 
+// Python binding functions
+
+fn is_gzip(entry: &DirEntry) -> bool {
+    entry.file_name()
+         .to_str()
+         .map(|s| s.ends_with(".gz"))
+         .unwrap_or(false)
+}
+
+
+fn tlv_from_gz_file(file: &PathBuf) -> Vec<TlvObject> {
+    let bytes = std::fs::read(file).unwrap();
+    let mut gz = GzDecoder::new(&bytes[..]);
+    let mut file_bytes = Vec::new();
+    gz.read_to_end(&mut file_bytes).unwrap();
+
+    let mut stream: Data = Data {
+        data: &file_bytes[..],
+        point: 0,
+    };
+    let mut tlvs: Vec<TlvObject> = Vec::new(); 
+
+    while stream.data.len() > stream.point as usize {
+        let tvl: Option<TlvObject> = decode_tlv( &mut stream, 0, 0);
+        match tvl {
+            Some(tlv) => {
+                tlvs.push(tlv);
+            }
+            None => {}
+        }
+    }
+    tlvs
+}
+
+
+#[pyfunction]
+fn tlv_from_gz_files(py: Python, path: String) -> PyResult<PyObject> {
+    let paths: Vec<PathBuf> = WalkDir::new(&path)
+        .into_iter()
+        .filter_map(|e| e.ok())
+        .filter(|e| is_gzip(e))
+        .map(|e| e.path().to_path_buf())
+        .collect();
+
+    let results: Mutex<HashMap<String, Vec<TlvObject>>> = Mutex::new(HashMap::new());  
+
+    paths.par_iter().for_each(|path: &PathBuf| {
+        let tlv_objects: Vec<TlvObject> = tlv_from_gz_file(path);
+    
+        if tlv_objects.is_empty() {
+            eprintln!("Failed to decode {}: No valid TLV objects found", path.display());
+        } else {
+            let mut results = results.lock().unwrap();
+            // Insert each TLVObject into the results map, associating it with the path.
+            results.insert(path.display().to_string(), tlv_objects.clone());
+        }
+    });
+
+    let results = results.into_inner().unwrap(); // Extract final result
+
+    let py_dict = PyDict::new(py);
+    for (key, value) in results.into_iter() {
+        py_dict.set_item(key, value)?;
+    }
+    Ok(py_dict.into())
+}
+
+
+#[pymodule]
+fn ber_tlv_decoder(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add_function(wrap_pyfunction!(tlv_from_gz_files, m)?)?;
+    Ok(())
+}
