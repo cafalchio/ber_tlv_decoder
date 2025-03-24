@@ -263,22 +263,6 @@ pub fn decode_tlv(
     Some(tlv)
 }
 
-// fn unravel_decoded_tvl() {
-
-// }
-
-// def unravel_decoded_tlv(
-//     self, tag_number: int, value: bytes, schema: dict
-// ) -> Tuple[dict, dict]:
-//     """Unravel TLV tree to a flat dictionary"""
-//     tlv = self.parser(tag_number, value, schema)
-//     if isinstance(tlv.value, dict):
-//         output = {f"{tlv.name}.{k}": v for k, v in tlv.value.items()}
-//     else:
-//         output = {tlv.name: tlv.value}
-//     return output, tlv.schema
-
-
 
 // ==================== Python bindings ========================
 
