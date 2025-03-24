@@ -87,6 +87,31 @@ impl TlvObject {
 }
 
 
+
+class TlvVozEricsson:
+    """Tag-Length-Value object for BER encoding for Ericsson Common Charging Output"""
+
+    def __init__(
+        self,
+        tag_number: int,
+        value: bytes,
+        schema: Mapping = None,
+    ):
+        self.length = len(value)
+        if schema is None:  # root
+            tag_mapping = modules.CallDataRecord[tag_number]
+        else:
+            tag_mapping = schema[tag_number]
+        if isinstance(tag_mapping["type"], MAPPING_TYPES):
+            self.name = tag_mapping["tag"]
+            self.value = tag_mapping["name"]
+            self.schema = tag_mapping["type"]
+        else:
+            self.name = tag_mapping["name"]
+            self.value = getattr(tag_mapping["type"](value), "value")
+            self.schema = {}
+
+
 pub struct Data<'a> {
     pub data: &'a [u8],
     pub point: u32,
@@ -263,6 +288,24 @@ pub fn decode_tlv(
     Some(tlv)
 }
 
+// fn unravel_decoded_tvl() {
+
+// }
+
+// def unravel_decoded_tlv(
+//     self, tag_number: int, value: bytes, schema: dict
+// ) -> Tuple[dict, dict]:
+//     """Unravel TLV tree to a flat dictionary"""
+//     tlv = self.parser(tag_number, value, schema)
+//     if isinstance(tlv.value, dict):
+//         output = {f"{tlv.name}.{k}": v for k, v in tlv.value.items()}
+//     else:
+//         output = {tlv.name: tlv.value}
+//     return output, tlv.schema
+
+
+
+// ==================== Python bindings ========================
 
 #[pyfunction]
 fn tlv_from_gz_file(path: String) -> PyResult<Vec<TlvObject>> {
