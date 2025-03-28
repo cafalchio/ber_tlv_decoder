@@ -87,3 +87,4 @@ docs/_build/
 
 # Pyenv
 .python-version
+/src/main.rs

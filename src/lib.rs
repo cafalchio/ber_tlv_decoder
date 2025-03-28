@@ -1,7 +1,7 @@
 use pyo3::prelude::*;
 use std::io::Read;
 use flate2::read::GzDecoder;
-
+use std::collections::HashMap;
 
 
 const CLASS_SHIFT: u8 = 6;
@@ -32,7 +32,7 @@ pub const BERCLASS: BerClass = BerClass {
 };
 
 
-const EOC: &[(u8, bool, u8, usize)] = &[
+const EOC: &[(u8, bool, u32, usize)] = &[
     (0, false, 0, 0),
     (2, true, 1, 0),
 ];
@@ -48,7 +48,7 @@ pub struct BerTag {
     #[pyo3(get)]
     pub constructed: bool,
     #[pyo3(get)]
-    pub number: u8,
+    pub number: u32,
 }
 
 #[derive(Clone)] 
@@ -114,11 +114,11 @@ fn hex_encode(bytes: &[u8]) -> String {
 
 
 pub fn read_tag(stream: &mut Data) -> Option<Vec<u8>> {
-    let buffer = stream.read(1);
+    let buffer: &[u8] = stream.read(1);
     if buffer == &[] as &[u8] {
         return None;
     }
-    let mut tag_bytes = vec![buffer[0]];
+    let mut tag_bytes: Vec<u8> = vec![buffer[0]];
 
     if buffer[0] & HIGH_CLASS_NUM == HIGH_CLASS_NUM {
         loop {
@@ -137,16 +137,19 @@ pub fn decode_tag(tag_bytes: &[u8]) -> BerTag{
     if tag_bytes.is_empty() {
         panic!("Empty tag -> Error decoding tag")
     }
-    let first_byte = tag_bytes[0];
-    let name = hex_encode(&tag_bytes[..1]);
-    let tag_class = (first_byte >> CLASS_SHIFT) & TWO_BIT_MASK;
-    let constructed = ((first_byte >> ENCODE_SHIFT) & MODULO_2) != 0;
-    let mut number: u8 = first_byte & CLASSNUM_MASK;
+    let first_byte: u8 = tag_bytes[0];
+    let name: String = hex_encode(&tag_bytes[..1]);
+    let tag_class: u8 = (first_byte >> CLASS_SHIFT) & TWO_BIT_MASK;
+    let constructed: bool = ((first_byte >> ENCODE_SHIFT) & MODULO_2) != 0;
+    let mut number: u32 = (first_byte & CLASSNUM_MASK) as u32;
 
-    if number == CLASSNUM_MASK {
+    if number as u8 == CLASSNUM_MASK {
         number = 0;
         for &b in &tag_bytes[1..] {
-            number = (number << SHIFT_7) | (b & MASK_BIT7);
+            number = (number << SHIFT_7) | (b & MASK_BIT7) as u32;
+            if b & MASK_BIT8 == 0 { // Stop condition when high bit is 0
+                break;
+            }
         }
     }
     BerTag {
@@ -181,22 +184,23 @@ pub fn length_size(stream: &mut Data) -> usize {
 pub fn read_length(stream: &mut Data) -> (usize, u8) {
 
     let first_byte_opt = stream.read(1).get(0).copied();
-    let first_byte = match first_byte_opt {
+    let first_byte: u8 = match first_byte_opt {
         Some(byte) => byte,
         None => panic!("Unexpected end of stream"),
     };
     if first_byte >> SHIFT_7 == 0 {
         return (first_byte.into(), 1);
     }
-    let length_size = first_byte & MASK_BIT7;
+    let length_size: u8 = first_byte & MASK_BIT7;
     if length_size == 0 {
         return (0, 1);
     }
-    let length_bytes = stream.read(length_size.into());
+    let length_bytes: &[u8] = stream.read(length_size as usize);
 
     if length_bytes.len() != length_size as usize {
         panic!("Unexpected end of length")
     }
+    
     let mut length: usize = 0;
     for &b in length_bytes.iter() {
         length = (length << SHIFT_8) | b as usize;
@@ -219,11 +223,13 @@ pub fn decode_tlv(
     let tag_bytes: Vec<u8> = read_tag(stream)?;
     let tag: BerTag = decode_tag(&tag_bytes);
     let (length, length_size) = read_length(stream);
+    // println!("depth {}: lenght {} ", depth, length);
     offset += tag_bytes.len() + length_size as usize;
 
     let data_len = stream.data.len();
 
     let value: &[u8] = stream.read(length);
+    // println!("stream: {:?}", value);
     
     if reached_eoc(&tag, length) {
         return decode_tlv(stream, offset, depth);
@@ -233,7 +239,6 @@ pub fn decode_tlv(
         return None;
     }
     
-
     let mut tlv = TlvObject {
         tag,
         length,
@@ -247,6 +252,7 @@ pub fn decode_tlv(
         data: &value,
         point: 0,
     };
+    // println!("{}: {}", tlv.tag.name, hex_encode(&tlv.value));
     
     if tlv.tag.constructed {
         let mut child_offset: usize = 0;
@@ -254,20 +260,34 @@ pub fn decode_tlv(
             if let Some(child) = decode_tlv(&mut new_value, child_offset, depth + 1) {
                 child_offset += child.length as usize;
                 tlv.children.push(child);
+                // println!("{}", depth);
             } else {
                 break;
             }
         }
-    }
-    
+    } 
     Some(tlv)
+}
+
+
+
+fn extract_tags(tlv: &TlvObject, tags: &mut HashMap<String, Vec<u8>>) {
+    if tlv.children.is_empty() {
+        let tag_name = tlv.tag.name.clone();
+        let tag_value = tlv.value.clone();
+        tags.insert(tag_name, tag_value); 
+    } else {
+        for child in &tlv.children {
+            extract_tags(child, tags);
+        }
+    }
 }
 
 
 // ==================== Python bindings ========================
 
 #[pyfunction]
-fn tlv_from_gz_file(path: String) -> PyResult<Vec<TlvObject>> {
+fn tlv_from_gz_file(path: String) -> PyResult<Vec<HashMap<String, Vec<u8>>>> {
     let bytes = std::fs::read(path).unwrap();
     let mut gz = GzDecoder::new(&bytes[..]);
     let mut file_bytes = Vec::new();
@@ -277,16 +297,15 @@ fn tlv_from_gz_file(path: String) -> PyResult<Vec<TlvObject>> {
         data: &file_bytes[..],
         point: 0,
     };
-    let mut tlvs: Vec<TlvObject> = Vec::new(); 
+    let mut tlvs: Vec<HashMap<String, Vec<u8>>> = Vec::new(); 
 
     while stream.data.len() > stream.point as usize {
-        let tvl: Option<TlvObject> = decode_tlv( &mut stream, 0, 0);
-        match tvl {
-            Some(tlv) => {
-                tlvs.push(tlv);
-            }
-            None => {}
-        }
+        if let Some(tlv) = decode_tlv(&mut stream, 0, 0) {
+            let mut tags: HashMap<String, Vec<u8>> = HashMap::new();
+            extract_tags(&tlv, &mut tags);
+            tlvs.push(tags);
+            // break;
+        } 
     }
     Ok(tlvs)
 }
